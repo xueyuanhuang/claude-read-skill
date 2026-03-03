@@ -1,0 +1,17 @@
+{
+  "name": "claude-read-skill",
+  "owner": {
+    "name": "xueyuanhuang"
+  },
+  "plugins": [
+    {
+      "name": "claude-read-skill",
+      "source": ".",
+      "description": "Read and extract content from any URL — tweets, articles, WeChat posts, and more",
+      "version": "1.0.0",
+      "author": {
+        "name": "xueyuanhuang"
+      }
+    }
+  ]
+}

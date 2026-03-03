@@ -1,0 +1,12 @@
+{
+  "name": "claude-read-skill",
+  "version": "1.0.0",
+  "description": "Read and extract content from any URL — tweets, articles, WeChat posts, and more",
+  "author": {
+    "name": "xueyuanhuang"
+  },
+  "homepage": "https://github.com/xueyuanhuang/claude-read-skill",
+  "repository": "https://github.com/xueyuanhuang/claude-read-skill",
+  "license": "MIT",
+  "keywords": ["reader", "url", "twitter", "wechat", "article", "web"]
+}
