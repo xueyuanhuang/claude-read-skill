@@ -17,7 +17,7 @@ When user sends a URL and wants to read its content:
 | X/Twitter Article | `x.com/*/status/*` (long-form, has `article` field) | FxTwitter API via curl → extract `article.content.blocks` |
 | X/Twitter tweet | `x.com/*/status/*`, `twitter.com/*/status/*` | FxTwitter API (WebFetch) → Jina Reader |
 | X/Twitter other | `x.com/*` | Jina Reader |
-| WeChat article | `mp.weixin.qq.com/s/*` | Jina Reader |
+| WeChat article | `mp.weixin.qq.com/s/*` | Jina Reader → curl direct + HTML parse |
 | Xiaohongshu | `xiaohongshu.com/*`, `xhslink.com/*` | Jina Reader |
 | Bilibili | `bilibili.com/*`, `b23.tv/*` | Jina Reader |
 | Any web page | `*` | Jina Reader |
@@ -88,6 +88,44 @@ for b in blocks:
    WebFetch: https://r.jina.ai/<original_url>
    Prompt: Return the full article content.
    ```
+
+**For WeChat article URLs** (`mp.weixin.qq.com/s/*`):
+
+Try in order, stop at first success:
+
+1. **Jina Reader** (fast path):
+   ```
+   WebFetch: https://r.jina.ai/<original_url>
+   Prompt: Return the full article content in its original language.
+   ```
+
+2. **curl direct + HTML parse** (fallback when Jina returns CAPTCHA/403):
+   ```bash
+   curl -s \
+     -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+     -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+     -H "Accept-Language: zh-CN,zh;q=0.9" \
+     "<wechat_url>" | python3 -c "
+   import sys, re
+   html = sys.stdin.read()
+   # Extract title
+   title = re.search(r'<h1[^>]*class=\"rich_media_title\"[^>]*>(.*?)</h1>', html, re.DOTALL)
+   if title:
+       print('# ' + title.group(1).strip())
+       print()
+   # Extract content — stop before script tags to avoid JS pollution
+   content = re.search(r'id=\"js_content\"[^>]*>(.*?)<script', html, re.DOTALL)
+   if content:
+       text = re.sub(r'<[^>]+>', '', content.group(1))
+       text = re.sub(r'&amp;', '&', text)
+       text = re.sub(r'&nbsp;', ' ', text)
+       text = re.sub(r'&lt;', '<', text)
+       text = re.sub(r'&gt;', '>', text)
+       text = re.sub(r'\n{3,}', '\n\n', text).strip()
+       print(text)  # No truncation — print full content
+   "
+   ```
+   > **Key fixes**: match up to `<script` (not `</div>`) to avoid JS code leaking into output; no `[:N]` truncation.
 
 **For all other URLs**:
 
