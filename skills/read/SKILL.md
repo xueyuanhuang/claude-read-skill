@@ -17,7 +17,7 @@ When user sends a URL and wants to read its content:
 | X/Twitter Article | `x.com/*/status/*` (long-form, has `article` field) | FxTwitter API via curl → extract `article.content.blocks` |
 | X/Twitter tweet | `x.com/*/status/*`, `twitter.com/*/status/*` | FxTwitter API (WebFetch) → Jina Reader |
 | X/Twitter other | `x.com/*` | Jina Reader |
-| WeChat article | `mp.weixin.qq.com/s/*` | Jina Reader → curl direct + HTML parse |
+| WeChat article | `mp.weixin.qq.com/s/*` | curl direct + HTML parse → Jina Reader |
 | Xiaohongshu | `xiaohongshu.com/*`, `xhslink.com/*` | Jina Reader |
 | Bilibili | `bilibili.com/*`, `b23.tv/*` | Jina Reader |
 | Any web page | `*` | Jina Reader |
@@ -93,13 +93,7 @@ for b in blocks:
 
 Try in order, stop at first success:
 
-1. **Jina Reader** (fast path):
-   ```
-   WebFetch: https://r.jina.ai/<original_url>
-   Prompt: Return the full article content in its original language.
-   ```
-
-2. **curl direct + HTML parse** (fallback when Jina returns CAPTCHA/403):
+1. **curl direct + HTML parse** (most reliable — bypasses anti-bot detection):
    ```bash
    curl -s \
      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
@@ -126,6 +120,12 @@ Try in order, stop at first success:
    "
    ```
    > **Key fixes**: match up to `<script` (not `</div>`) to avoid JS code leaking into output; no `[:N]` truncation.
+
+2. **Jina Reader** (fallback when curl returns CAPTCHA/empty):
+   ```
+   WebFetch: https://r.jina.ai/<original_url>
+   Prompt: Return the full article content in its original language.
+   ```
 
 **For all other URLs**:
 
@@ -165,8 +165,8 @@ Format the extracted content clearly:
 |-----------|--------|
 | FxTwitter `article` field present but WebFetch summarizes | Use Bash `curl` + Python to extract raw `article.content.blocks` |
 | FxTwitter returns empty | Fall back to Jina Reader |
-| WeChat: Jina Reader (WebFetch) returns CAPTCHA | Fall back to `curl` + Jina Reader URL |
-| WeChat: `curl` + Jina Reader returns 403 | Fall back to `curl` direct to WeChat URL with browser User-Agent + Python HTML parse |
+| WeChat: curl returns CAPTCHA/empty | Fall back to Jina Reader |
+| WeChat: both curl and Jina fail | Inform user, suggest opening in browser |
 | Jina Reader returns garbage/login wall (other platforms) | Inform user, suggest `x-reader login <platform>` |
 | URL is behind paywall | Inform user, show whatever partial content is available |
 | URL is invalid | Tell user the URL doesn't look right |
