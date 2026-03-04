@@ -165,6 +165,8 @@ Format the extracted content clearly:
 |-----------|--------|
 | FxTwitter `article` field present but WebFetch summarizes | Use Bash `curl` + Python to extract raw `article.content.blocks` |
 | FxTwitter returns empty | Fall back to Jina Reader |
-| Jina Reader returns garbage/login wall | Inform user, suggest `x-reader login <platform>` |
+| WeChat: Jina Reader (WebFetch) returns CAPTCHA | Fall back to `curl` + Jina Reader URL |
+| WeChat: `curl` + Jina Reader returns 403 | Fall back to `curl` direct to WeChat URL with browser User-Agent + Python HTML parse |
+| Jina Reader returns garbage/login wall (other platforms) | Inform user, suggest `x-reader login <platform>` |
 | URL is behind paywall | Inform user, show whatever partial content is available |
 | URL is invalid | Tell user the URL doesn't look right |
