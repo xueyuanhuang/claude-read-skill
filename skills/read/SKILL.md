@@ -15,12 +15,13 @@ When user sends a URL and wants to read its content:
 | Platform | URL Pattern | Strategy |
 |----------|-------------|----------|
 | X/Twitter Article | `x.com/*/status/*` (long-form, has `article` field) | FxTwitter API via curl → extract `article.content.blocks` |
-| X/Twitter tweet | `x.com/*/status/*`, `twitter.com/*/status/*` | FxTwitter API (WebFetch) → Jina Reader |
-| X/Twitter other | `x.com/*` | Jina Reader |
-| WeChat article | `mp.weixin.qq.com/s/*` | curl direct + HTML parse → Jina Reader |
-| Xiaohongshu | `xiaohongshu.com/*`, `xhslink.com/*` | Jina Reader |
-| Bilibili | `bilibili.com/*`, `b23.tv/*` | Jina Reader |
-| Any web page | `*` | Jina Reader |
+| X/Twitter tweet | `x.com/*/status/*`, `twitter.com/*/status/*` | FxTwitter API → Jina Reader → Playwright |
+| X/Twitter other | `x.com/*` | Jina Reader → Playwright |
+| WeChat article | `mp.weixin.qq.com/s/*` | curl direct + HTML parse → Jina Reader → Playwright |
+| Login-required pages | any URL requiring auth | Playwright directly |
+| Xiaohongshu | `xiaohongshu.com/*`, `xhslink.com/*` | Jina Reader → Playwright |
+| Bilibili | `bilibili.com/*`, `b23.tv/*` | Jina Reader → Playwright |
+| Any web page | `*` | Jina Reader → Playwright |
 
 ## Pipeline
 
@@ -43,8 +44,6 @@ else:
 ```
 
 **If `HAS_ARTICLE` — X/Twitter Article (long-form):**
-
-Use curl + Python to extract the full article text from `article.content.blocks`:
 
 ```bash
 curl -s "https://api.fxtwitter.com/<username>/status/<tweet_id>" | python3 -c "
@@ -73,27 +72,33 @@ for b in blocks:
 "
 ```
 
-> **Why curl instead of WebFetch?** WebFetch always processes content through an AI model that summarizes it. For long articles, you must use Bash `curl` to get the raw JSON and extract text blocks directly.
-
 **If regular tweet — try in order, stop at first success:**
 
-1. **FxTwitter API** (best for tweets — full text, no truncation):
+1. **FxTwitter API**:
    ```
    WebFetch: https://api.fxtwitter.com/<username>/status/<tweet_id>
    Prompt: Return the full tweet content including any article text.
    ```
 
-2. **Jina Reader** (fallback — works for all web pages):
+2. **Jina Reader**:
    ```
    WebFetch: https://r.jina.ai/<original_url>
    Prompt: Return the full article content.
    ```
 
+3. **Playwright** (fallback):
+   ```
+   browser_navigate to <original_url>
+   browser_snapshot to extract page content
+   ```
+
+---
+
 **For WeChat article URLs** (`mp.weixin.qq.com/s/*`):
 
 Try in order, stop at first success:
 
-1. **curl direct + HTML parse** (most reliable — bypasses anti-bot detection):
+1. **curl direct + HTML parse** (most reliable for WeChat):
    ```bash
    curl -s \
      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
@@ -102,12 +107,10 @@ Try in order, stop at first success:
      "<wechat_url>" | python3 -c "
    import sys, re
    html = sys.stdin.read()
-   # Extract title
    title = re.search(r'<h1[^>]*class=\"rich_media_title\"[^>]*>(.*?)</h1>', html, re.DOTALL)
    if title:
        print('# ' + title.group(1).strip())
        print()
-   # Extract content — stop before script tags to avoid JS pollution
    content = re.search(r'id=\"js_content\"[^>]*>(.*?)<script', html, re.DOTALL)
    if content:
        text = re.sub(r'<[^>]+>', '', content.group(1))
@@ -116,28 +119,53 @@ Try in order, stop at first success:
        text = re.sub(r'&lt;', '<', text)
        text = re.sub(r'&gt;', '>', text)
        text = re.sub(r'\n{3,}', '\n\n', text).strip()
-       print(text)  # No truncation — print full content
+       print(text)
    "
    ```
-   > **Key fixes**: match up to `<script` (not `</div>`) to avoid JS code leaking into output; no `[:N]` truncation.
 
-2. **Jina Reader** (fallback when curl returns CAPTCHA/empty):
+2. **Jina Reader** (fallback):
    ```
    WebFetch: https://r.jina.ai/<original_url>
    Prompt: Return the full article content in its original language.
    ```
 
+3. **Playwright** (final fallback):
+   ```
+   browser_navigate to <original_url>
+   browser_snapshot to extract page content
+   ```
+
+---
+
+**For login-required pages** (detected when Jina/curl returns login wall):
+
+Skip directly to Playwright:
+```
+browser_navigate to <original_url>
+browser_snapshot — if login wall detected, inform user and stop
+```
+
+---
+
 **For all other URLs**:
 
-Use Jina Reader directly:
-```
-WebFetch: https://r.jina.ai/<original_url>
-Prompt: Return the full article content in its original language.
-```
+Try in order, stop at first success:
+
+1. **Jina Reader**:
+   ```
+   WebFetch: https://r.jina.ai/<original_url>
+   Prompt: Return the full article content in its original language.
+   ```
+
+2. **Playwright** (fallback):
+   ```
+   browser_navigate to <original_url>
+   browser_snapshot to extract page content
+   ```
+
+---
 
 ### Step 2: Present Content
-
-Format the extracted content clearly:
 
 ```markdown
 ## [Title]
@@ -157,16 +185,15 @@ Format the extracted content clearly:
 2. **Show full content** — do not truncate or over-summarize. Present the complete article.
 3. **Clean formatting** — convert to readable markdown, preserve structure (headings, lists, quotes).
 4. **If content is very long** (>3000 words), present it in full but add a brief TL;DR at the top.
-5. **If fetch fails**, tell the user which methods were tried and suggest alternatives (e.g., "try opening in browser").
+5. **If fetch fails**, tell the user which methods were tried and suggest alternatives.
 
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
-| FxTwitter `article` field present but WebFetch summarizes | Use Bash `curl` + Python to extract raw `article.content.blocks` |
-| FxTwitter returns empty | Fall back to Jina Reader |
-| WeChat: curl returns CAPTCHA/empty | Fall back to Jina Reader |
-| WeChat: both curl and Jina fail | Inform user, suggest opening in browser |
-| Jina Reader returns garbage/login wall (other platforms) | Inform user, suggest `x-reader login <platform>` |
+| FxTwitter returns empty | Fall back to Jina Reader → Playwright |
+| WeChat: curl returns CAPTCHA/empty | Fall back to Jina Reader → Playwright |
+| Jina returns login wall / CAPTCHA | Fall back to Playwright |
+| Playwright hits login wall | Inform user, ask if they want to provide credentials |
 | URL is behind paywall | Inform user, show whatever partial content is available |
 | URL is invalid | Tell user the URL doesn't look right |
