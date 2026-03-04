@@ -1,91 +1,132 @@
----
-name: read
-description: Read and extract content from any URL. Use when the user shares a link and wants to read the article, tweet, or web page content.
-disable-model-invocation: false
-argument-hint: "[URL to read]"
-allowed-tools: WebFetch, WebSearch, Bash, Read
----
+# Read URL Skill
 
-You are a universal URL content reader. The user will give you a URL and you will fetch and present the full content.
+> Send any URL → get the full content back in clean, readable format
+
+## Trigger
+
+When user sends a URL and wants to read its content:
+- `/read [URL]`
+- "帮我读一下这个链接"
+- "去看看这篇文章"
+- Any message containing a URL with reading intent
 
 ## Supported Platforms & Fetch Strategy
 
 | Platform | URL Pattern | Strategy |
 |----------|-------------|----------|
-| X/Twitter tweet | `x.com/*/status/*`, `twitter.com/*/status/*` | FxTwitter API -> Jina Reader |
-| X/Twitter other | `x.com/*`, `twitter.com/*` | Jina Reader |
+| X/Twitter Article | `x.com/*/status/*` (long-form, has `article` field) | FxTwitter API via curl → extract `article.content.blocks` |
+| X/Twitter tweet | `x.com/*/status/*`, `twitter.com/*/status/*` | FxTwitter API (WebFetch) → Jina Reader |
+| X/Twitter other | `x.com/*` | Jina Reader |
 | WeChat article | `mp.weixin.qq.com/s/*` | Jina Reader |
 | Xiaohongshu | `xiaohongshu.com/*`, `xhslink.com/*` | Jina Reader |
 | Bilibili | `bilibili.com/*`, `b23.tv/*` | Jina Reader |
 | Any web page | `*` | Jina Reader |
 
-## Your Workflow
+## Pipeline
 
-### Step 1: Identify Platform
+### Step 1: Identify Platform & Fetch Content
 
-Detect the platform from the URL pattern.
+**For X/Twitter tweet URLs** (`x.com/<user>/status/<id>`):
 
-### Step 2: Fetch Content
+First, fetch raw JSON via curl to detect if it's a long-form X Article:
 
-**For X/Twitter tweet URLs** (matching `x.com/<user>/status/<id>` or `twitter.com/<user>/status/<id>`):
+```bash
+curl -s "https://api.fxtwitter.com/<username>/status/<tweet_id>" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+article = data.get('tweet', {}).get('article')
+if article:
+    print('HAS_ARTICLE')
+else:
+    print(data['tweet'].get('text', ''))
+"
+```
 
-Try in order, stop at first success:
+**If `HAS_ARTICLE` — X/Twitter Article (long-form):**
 
-1. **FxTwitter API** — best for tweets, returns full text with no truncation:
+Use curl + Python to extract the full article text from `article.content.blocks`:
+
+```bash
+curl -s "https://api.fxtwitter.com/<username>/status/<tweet_id>" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+blocks = data['tweet']['article']['content']['blocks']
+for b in blocks:
+    t = b.get('text', '').strip()
+    btype = b.get('type', '')
+    if not t:
+        continue
+    if btype == 'header-one':
+        print(f'\n# {t}\n')
+    elif btype == 'header-two':
+        print(f'\n## {t}\n')
+    elif btype == 'header-three':
+        print(f'\n### {t}\n')
+    elif btype == 'blockquote':
+        print(f'> {t}\n')
+    elif btype == 'unordered-list-item':
+        print(f'- {t}')
+    elif btype == 'ordered-list-item':
+        print(f'1. {t}')
+    else:
+        print(f'{t}\n')
+"
+```
+
+> **Why curl instead of WebFetch?** WebFetch always processes content through an AI model that summarizes it. For long articles, you must use Bash `curl` to get the raw JSON and extract text blocks directly.
+
+**If regular tweet — try in order, stop at first success:**
+
+1. **FxTwitter API** (best for tweets — full text, no truncation):
    ```
-   WebFetch URL: https://api.fxtwitter.com/<username>/status/<tweet_id>
-   Prompt: Return the full tweet content including any article text. Show everything.
+   WebFetch: https://api.fxtwitter.com/<username>/status/<tweet_id>
+   Prompt: Return the full tweet content including any article text.
    ```
 
-2. **Jina Reader** — fallback:
+2. **Jina Reader** (fallback — works for all web pages):
    ```
-   WebFetch URL: https://r.jina.ai/<original_url>
-   Prompt: Return the full article content in its original language.
+   WebFetch: https://r.jina.ai/<original_url>
+   Prompt: Return the full article content.
    ```
 
 **For all other URLs**:
 
 Use Jina Reader directly:
 ```
-WebFetch URL: https://r.jina.ai/<original_url>
+WebFetch: https://r.jina.ai/<original_url>
 Prompt: Return the full article content in its original language.
 ```
 
-**If both methods fail**, try fetching the original URL directly with WebFetch as a last resort.
+### Step 2: Present Content
 
-### Step 3: Present Content
-
-Format the extracted content clearly. Example:
+Format the extracted content clearly:
 
 ```markdown
 ## [Title]
 
-**Author**: [author/source]
+**Author**: [author/source if available]
 **Platform**: [twitter/wechat/web/...]
 **URL**: [original URL]
 
 ---
 
-[Full content, well-formatted with markdown]
+[Full content in original language, well-formatted with markdown]
 ```
 
-## Rules
+### Rules
 
 1. **Preserve original language** — if the article is in Chinese, present it in Chinese. Do not translate unless asked.
 2. **Show full content** — do not truncate or over-summarize. Present the complete article.
 3. **Clean formatting** — convert to readable markdown, preserve structure (headings, lists, quotes).
 4. **If content is very long** (>3000 words), present it in full but add a brief TL;DR at the top.
-5. **If fetch fails**, tell the user which methods were tried and suggest alternatives.
+5. **If fetch fails**, tell the user which methods were tried and suggest alternatives (e.g., "try opening in browser").
 
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
+| FxTwitter `article` field present but WebFetch summarizes | Use Bash `curl` + Python to extract raw `article.content.blocks` |
 | FxTwitter returns empty | Fall back to Jina Reader |
-| Jina Reader returns garbage or login wall | Inform user, show whatever partial content is available |
-| URL is behind paywall | Inform user, show partial content if any |
-| URL is invalid | Tell user the URL format is not recognized |
-
-## User's request
-
-$ARGUMENTS
+| Jina Reader returns garbage/login wall | Inform user, suggest `x-reader login <platform>` |
+| URL is behind paywall | Inform user, show whatever partial content is available |
+| URL is invalid | Tell user the URL doesn't look right |
